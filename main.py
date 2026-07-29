@@ -1,10 +1,20 @@
 from datetime import datetime
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
-# (Asegúrate de mantener aquí las librerías que usabas para Playwright, por ejemplo: from playwright.async_api import async_playwright)
+from playwright.async_api import async_playwright
 
 app = FastAPI(title="LexSocial - Motor de Urgencias y RND")
+
+# --- CONFIGURACIÓN DE CORS (Soluciona el Failed to fetch en Lovable) ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Base de datos en memoria para el registro
 searches_log = []
@@ -33,17 +43,58 @@ class AmparoRequest(BaseModel):
 URGENCY_TRIGGERS = ["detenida", "detenido", "cateo", "arresto", "retenido", "fiscalia", "policia"]
 
 
-# --- 1. TUS ENDPOINTS DE SCRAPING / RND ANTERIORES ---
+# --- 1. ENDPOINT RND CON SCRAPING DE PLAYWRIGHT INTEGRADO ---
 @app.post("/api/rnd/consultar")
 async def consultar_rnd(query: dict):
     try:
-        # Aquí va tu lógica de Playwright para consultar el RND
-        pass
+        nombre_detenido = query.get("nombre") or query.get("detainee_name")
+        if not nombre_detenido:
+            raise HTTPException(status_code=400, detail="El nombre es obligatorio para realizar la búsqueda en el RND.")
+        
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            page = await context.new_page()
+            
+            # Navegar al portal oficial del RND
+            await page.goto("https://consultasdetencion.sspc.gob.mx/", timeout=60000)
+            
+            # Identificar e interactuar con el campo de búsqueda
+            input_selector = "input[type='text'], input[placeholder*='nombre'], input[id*='nombre']"
+            await page.wait_for_selector(input_selector, timeout=15000)
+            await page.fill(input_selector, nombre_detenido)
+            
+            # Ejecutar clic en buscar
+            button_selector = "button[type='submit'], button:has-text('Buscar'), input[type='submit']"
+            await page.click(button_selector)
+            
+            # Esperar resultados
+            await page.wait_for_timeout(5000)
+            
+            # Extraer la información
+            resultados = []
+            cards = await page.locator(".resultado-item, tr, .card").all()
+            
+            for card in cards:
+                texto_card = await card.inner_text()
+                if texto_card.strip():
+                    resultados.append(texto_card.strip())
+            
+            await browser.close()
+            
+            return {
+                "status": "success",
+                "query": nombre_detenido,
+                "resultados_encontrados": resultados if resultados else ["No se detectaron registros visibles directos o se requiere verificar selectores en el portal."]
+            }
+            
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- 2. NUEVO ENDPOINT: INTERCEPTOR DE CHAT DE URGENCIA ---
+# --- 2. INTERCEPTOR DE CHAT DE URGENCIA ---
 @app.post("/api/chat/interceptor")
 async def chat_interceptor(payload: ChatMessage):
     msg_lower = payload.message.lower()
@@ -70,7 +121,7 @@ async def chat_interceptor(payload: ChatMessage):
             "1. **Búsqueda y localización oficial en tiempo real en el RND (Registro Nacional de Detenciones).**\n"
             "2. **Asesoría jurídica especializada inmediata.**\n"
             "3. **Estrategia legal de contención.**\n"
-            "4. **Módulo de Amparo Exprés Automatizado** (con todas las causales críticas y guía paso a paso para su presentación en el Juzgado de Distrito).\n\n"
+            "4. **Módulo de Amparo Exprés Automatizado** (con cédulas profesionales del **Lic. Gumaro Ramírez Reyes**).\n\n"
             "Por favor, confírmanos el **nombre completo de la persona detenida** y la corporación o lugar de los hechos para proceder con el rastreo inmediato en el RND."
         )
         
@@ -81,12 +132,12 @@ async def chat_interceptor(payload: ChatMessage):
         }
     
     return {
-            "status": "normal_flow",
-            "ai_response": "Entendido. Continuamos con el flujo normal de asistencia en LexSocial."
+        "status": "normal_flow",
+        "ai_response": "Entendido. Continuamos con el flujo normal de asistencia en LexSocial."
     }
 
 
-# --- 3. NUEVO ENDPOINT: GENERADOR DE AMPARO EXPRÉS ---
+# --- 3. GENERADOR DE AMPARO EXPRÉS ---
 @app.post("/api/legal/generar-amparo-expres")
 async def generar_amparo_expres(payload: AmparoRequest):
     abogado_autorizado = "Lic. Gumaro Ramírez Reyes"
