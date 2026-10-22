@@ -2,5 +2,8 @@ services:
   - type: web
     name: lexsocial-rnd
     env: python
-    buildCommand: "pip install -r requirements.txt && python -m playwright install chromium"
+    buildCommand: "pip install -r requirements.txt && python -m playwright install --with-deps chromium"
     startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
+    envVars:
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: "0"
